@@ -205,6 +205,8 @@ else
 	die 1 "I need a source of ticks, like /proc/uptime or /proc/timer_list"
 fi
 
+set -e
+
 HEADER_PRINTED=false
 CSV_FORMAT="%s\t%s\t%s\t%s\n"
 human_format() {
@@ -438,6 +440,8 @@ trap "exit" INT TERM
 trap "kill $monitor_cpu_pid 2>/dev/null; rm -rf '$tempdir'" EXIT
 
 if [ -z "$SERVER" ]; then
+	! "$VERBOSE" || err "No server defined. Looking for the best server"
+
 	servers=$(
 	if command -v wget &>/dev/null; then
 		wget -O - -q "$SPEEDTEST_SERVERS"
@@ -476,8 +480,10 @@ if [ -z "$SERVER" ]; then
 	[ "$server" ] || die 1 "No server reachable!"
 	! "$VERBOSE" || err "Best Server: $(echo "$servers" | grep "^$server" | tr '\t' ' ') at $best_latency_ms ms"
 else
+	! "$VERBOSE" || err "Server defined as '$SERVER'"
 	server=$SERVER
 fi
+
 if ! "$LIST_ONLY"; then
 	test_server "$server" PING DOWNLOAD UPLOAD
 fi
