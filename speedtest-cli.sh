@@ -28,12 +28,15 @@ function time_in_ms_uptime() {
 	local recv_cmd="$2"
 	local check_cmd="${3:-true}"
 	local t1 t2 x
-	read t1 x < /proc/uptime
-	{ $send_cmd; } >&${to_server_fd} </dev/null
-	{ $recv_cmd; } &>/dev/null
+	read t1 x < /proc/uptime ||
+		{ err=$?; echo "Failed on reading tick" >&2; return $err; }
+	{ $send_cmd; } >&${to_server_fd} </dev/null ||
+		{ err=$?; echo "Failed on send cmd '$send_cmd'" >&2; return $err; }
+	{ $recv_cmd; } &>/dev/null ||
+		{ err=$?; echo "Failed on recv cmd '$recv_cmd'" >&2; return $err; }
 	read t2 x < /proc/uptime
 	eval "$check_cmd" || return 1
-	echo $((${t2//./}-${t1//./}))0
+	echo "$((${t2//./}-${t1//./}))0"
 }
 
 function time_in_ms_hrtimer(){
@@ -41,12 +44,15 @@ function time_in_ms_hrtimer(){
 	local recv_cmd="$2"
 	local check_cmd="${3:-true}"
 	local t1 t2 x
-	{ read -r _; read -r _; read -r now at t1 _; } < /proc/timer_list
-	{ $send_cmd; } >&${to_server_fd} </dev/null
-	{ $recv_cmd; } &>/dev/null
+	{ read -r _; read -r _; read -r now at t1 _; } < /proc/timer_list ||
+		{ err=$?; echo "Failed on reading tick" >&2; return $err; }
+	{ $send_cmd; } >&${to_server_fd} </dev/null ||
+		{ err=$?; echo "Failed on send cmd '$send_cmd'" >&2; return $err; }
+	{ $recv_cmd; } &>/dev/null ||
+		{ err=$?; echo "Failed on recv cmd '$recv_cmd'" >&2; return $err; }
 	{ read -r _; read -r _; read -r now at t2 _ ; } < /proc/timer_list
 	eval "$check_cmd" || return 1
-	echo $(((${t2//./}-${t1//./})/1000000))
+	echo "$(((${t2//./}-${t1//./})/1000000))"
 }
 
 function monitor_cpu(){
