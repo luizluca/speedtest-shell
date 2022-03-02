@@ -157,6 +157,43 @@ for cmd in $NETCATS; do
 	esac
 	break
 done
+
+if ! command -v getent &>/dev/null; then
+	! "$VERBOSE" || err "getent not found. Using ping instead."
+	getent() {
+		local protos="-4 -6"
+		case "$1" in
+			ahostsv4) protos=-4;;
+			ahostsv6) protos=-6;;
+			ahosts)   ;;
+			hosts)    protos="-c1";;
+			"")     err "fake-getent: wrong number of arguments"
+				return 1;;
+			*)
+				err "fake-getent only supports ( ahosts[v4|v6] | host )"
+				return 1;;
+		esac
+		shift
+		local host
+		for host; do
+			local proto
+			for proto in $protos; do
+				local out ipaddr
+				out=$(ping -n -W0 -w0 -q -c1 $proto $host 2>&1) ||
+					continue
+				ipaddr=$(echo "$out" | sed -r 's/^[^\(]* \(([^)]+)\).*/\1/;q')
+				if [ "$proto" = -c1 ]; then
+					printf "%s\n" "$ipaddr"
+				else
+					printf "%s %s %s\n" "$ipaddr" STREAM "$host"
+					printf "%s %s\n" "$ipaddr" DGRAM
+					printf "%s %s\n" "$ipaddr" RAW
+				fi
+			done
+		done
+	}
+fi
+
 [ "$NETCAT" ] ||
 	die 1 "I need at least a netcat-like command (socat, nc, netcat)"
 
@@ -278,16 +315,13 @@ test_server() {
 			else
 				[ $proto -eq 6 ] && query=AAAA || query=A
 
-				ip_address=$(nslookup -query="$query" "$server" |
-					awk -vserver="$server" '($1 == server) && (($3 == "AAAA") || ($3 == "A")) { print $5; exit }
-								$2 == server { getline; print $2; exit }'
-				)
-
+				ip_address=$(getent "ahostsv$proto" "$server" | awk '$2=="STREAM" { print $1}')
 				[ "$ip_address" ] || continue
-				! "$VERBOSE" || err "Connecting to $server($ip_address)..."
-				if $NETCAT "$ip_address" "$port" <${to_server}; then
-				       exit
-				fi
+			fi
+
+			! "$VERBOSE" || err "Connecting to $server($ip_address)..."
+			if $NETCAT "$ip_address" "$port" <${to_server}; then
+			       exit
 			fi
 		done
 		exit
