@@ -12,52 +12,76 @@ next_free_fd() {
 }
 
 err(){	printf "%s\n" "$1" >&2; }
+
 die(){
 	local errcode=$1; shift
-	[ $LOGLEVEL -lt $ERR ] || err "$@"
+	[ "$LOGLEVEL" -lt "$ERR" ] || err "$@"
 	exit $errcode
 } 
 
-function awkcalc() {
+awkcalc() {
 	local exp="$1"; shift
 	echo "$@" | LC_NUMERIC=C awk '{ print '"$exp"' }'
 }
 
-function time_in_ms_uptime() {
-	local send_cmd="$1"
-	local recv_cmd="$2"
-	local check_cmd="${3:-true}"
+time_in_ms_uptime() {
+	local cmd_fd="${1:?Send channel FD is missing}"
+	local send_cmd="${2:?Send command missing}"
+	local recv_cmd="${3:?Recv command missing}"
+	local check_cmd="${4:-true}"
 	local errcode
 	local t1 t2 x
 	read t1 x < /proc/uptime ||
-		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on reading tick"; return $errcode; }
-	{ $send_cmd; } >&${to_server_fd} </dev/null ||
-		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on send cmd '$send_cmd'"; return $errcode; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt "$WARN" ] || err "Failed on reading tick"; return $errcode; }
+	{ $send_cmd; } >&${cmd_fd} </dev/null ||
+		{ errcode=$?; [ "$LOGLEVEL" -lt "$WARN" ] || err "Failed on send cmd '$send_cmd'"; return $errcode; }
 	{ $recv_cmd; } &>/dev/null ||
-		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on recv cmd '$recv_cmd'"; return $errcode; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt "$WARN" ] || err "Failed on recv cmd '$recv_cmd'"; return $errcode; }
 	read t2 x < /proc/uptime
 	eval "$check_cmd" || return 1
-	echo "$((${t2//./}-${t1//./}))0"
+	t1=$(echo "$t1" | tr -d '.,')
+	t2=$(echo "$t2" | tr -d '.,')
+	echo "$((t2-t1))0"
 }
 
-function time_in_ms_hrtimer(){
-	local send_cmd="$1"
-	local recv_cmd="$2"
-	local check_cmd="${3:-true}"
+time_in_ms_hrtimer(){
+	local cmd_fd="${1:?Send channel FD is missing}"
+	local send_cmd="${2:?Send command missing}"
+	local recv_cmd="${3:?Recv command missing}"
+	local check_cmd="${4:-true}"
 	local errcode
 	local t1 t2 x
 	{ read -r _; read -r _; read -r now at t1 _; } < /proc/timer_list ||
-		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on reading tick" >&2; return $errcode; }
-	{ $send_cmd; } >&${to_server_fd} </dev/null ||
-		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on send cmd '$send_cmd'" >&2; return $errcode; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on reading tick"; return $errcode; }
+	{ $send_cmd; } >&${cmd_fd} </dev/null ||
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on send cmd '$send_cmd'"; return $errcode; }
 	{ $recv_cmd; } &>/dev/null ||
-		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on recv cmd '$recv_cmd'" >&2; return $errcode; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on recv cmd '$recv_cmd'"; return $errcode; }
 	{ read -r _; read -r _; read -r now at t2 _ ; } < /proc/timer_list
 	eval "$check_cmd" || return 1
-	echo "$(((${t2//./}-${t1//./})/1000000))"
+	t1=$(echo "$t1" | tr -d '.,')
+	t2=$(echo "$t2" | tr -d '.,')
+	echo "$(( (t2-t1) / 1000000 ))"
 }
 
-function monitor_cpu(){
+time_in_ms_epochtime() {
+	local cmd_fd="${1:?Send channel FD is missing}"
+	local send_cmd="${2:?Send command missing}"
+	local recv_cmd="${3:?Recv command missing}"
+	local check_cmd="${4:-true}"
+	local t1 t2
+	t1=${EPOCHREALTIME}
+	{ $send_cmd; } >&${cmd_fd} </dev/null ||
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on send cmd '$send_cmd'"; return $errcode; }
+	{ $recv_cmd; } &>/dev/null ||
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on recv cmd '$recv_cmd'"; return $errcode; }
+	t2=${EPOCHREALTIME}
+	t1=$(echo "$t1" | tr -d '.,')
+	t2=$(echo "$t2" | tr -d '.,')
+	echo "$(( (t2-t1) / 1000 ))"
+}
+
+monitor_cpu(){
 	local tag
 	local last_idle=0
 	while true; do
@@ -84,7 +108,7 @@ function monitor_cpu(){
 	done
 }
 
-PROTOS="4 6"
+PROTOS="6 4"
 DOWNLOAD_SIZE=$((50 * 1024 * 1024))
 UPLOAD_SIZE=$((20 * 1024 * 1024))
 PING_REPEAT=10
@@ -144,12 +168,14 @@ while getopts '46c:d:hi:I:ls:u:vV' opt; do
 done
 
 for cmd in $NETCATS; do
-	command -v $cmd &>/dev/null || continue
-	[ "$LOGLEVEL" -lt $INFO ] || err Using "$cmd" as client
+	command -v $cmd 2>/dev/null >/dev/null || continue
+	[ "$LOGLEVEL" -lt $INFO ] || err "Using '$cmd' as client"
 	case $cmd in
 		socat)
 			nc_socat(){
-				[ "$LOGLEVEL" -lt $TRACE ] || socat_verbose='-v' || socat_verbose=''
+				socat_args=''
+				[ "$LOGLEVEL" -ge $INFO ] || socat_verbose="$socat_args -lf /dev/null"
+				[ "$LOGLEVEL" -lt $TRACE ] || socat_verbose="$socat_args -v"
 				if [[ "$1" = *:* ]]; then
 					socat $socat_verbose - "tcp6-connect:[$1]:$2${BIND:+,so-bindtodevice=$BIND}"
 				else
@@ -165,7 +191,7 @@ for cmd in $NETCATS; do
 	break
 done
 
-if ! command -v getent &>/dev/null; then
+if ! command -v getent 2>/dev/null >/dev/null; then
 	[ "$LOGLEVEL" -lt $WARN ] || err "getent not found. Using ping instead."
 	getent() {
 		local protos="-4 -6"
@@ -204,7 +230,13 @@ fi
 [ "$NETCAT" ] ||
 	die 1 "I need at least a netcat-like command (socat, nc, netcat)"
 
-if [ -r /proc/timer_list ]; then
+#time_in_ms_uptime 2 "sleep 0.231" "true"
+#time_in_ms_hrtimer 2 "sleep 0.231" "true"
+#time_in_ms_epochtime 2 "sleep 0.231" "true"
+
+if [ -n "$EPOCHREALTIME" ]; then
+	time_in_ms=time_in_ms_epochtime
+elif [ -r /proc/timer_list ]; then
 	time_in_ms=time_in_ms_hrtimer
 elif [ -r /proc/uptime ]; then
 	time_in_ms=time_in_ms_uptime
@@ -283,13 +315,15 @@ print_result() {
 
 			echo "speedtest_${test}_${prop}_${unit}{server="$server:$port",address="$ip_address",family="ipv$proto"} $value";;
 		csv) 
-			[ "$HEADER_PRINTED" ] ||
+			"$HEADER_PRINTED" ||
 				printf "$CSV_FORMAT" "server" "test" "property" "unit" "value"
+			HEADER_PRINTED=true
 			printf "$CSV_FORMAT" "$@";;
 		cli|*) 
-			[ "$HEADER_PRINTED" ] || {
+			"$HEADER_PRINTED" || {
 				echo "Server: $server:$port ($ip_address/ipv$proto)"
 				echo "============================================"
+				HEADER_PRINTED=true
 			}
 			echo "${test}.${prop} = $(human_format "$value" "$unit")"
 	esac
@@ -308,13 +342,15 @@ test_server() {
 
 	port=${server##*:}
 	server=${server%:*}
-	if [[ "${server:0:1}" = "["*"]" ]]; then
+	if [ "${server#[}" != "${server}" ]; then
 		server=${server#[}
 		server=${server%]}
 		PROTOS=6
 	fi
 
+	next_free_fd to_server_fd
 	(
+		eval "exec ${to_server_fd}<""'$to_server'"
 		# Detect server proto:
 		for proto in $PROTOS; do
 			[ "$LOGLEVEL" -lt $INFO ] || err "Trying $server:$port (IPv$proto)..."
@@ -331,30 +367,34 @@ test_server() {
 			fi
 
 			[ "$LOGLEVEL" -lt $INFO ] || err "Connecting to $server:$port($ip_address)..."
-			$NETCAT "$ip_address" "$port" <${to_server} && exit
+			# Inform the reader about the proto. It'll prefix the HI/HELLO answer
+			echo -n "$ip_address,$proto "
+			$NETCAT "$ip_address" "$port" <&${to_server_fd} && exit || continue
+			echo aa
 		done
 		exit
 		die 1 "$server could not be resolved or it is not reachable"
 
 	) | (
-
-		next_free_fd to_server_fd
-		eval "exec ${to_server_fd}<>""'$to_server'"
+		eval "exec ${to_server_fd}>""'$to_server'"
 
 		[ "$LOGLEVEL" -lt $INFO ] || err "Sending HI..."
-		t_ms=$($time_in_ms \
-			"echo HI" \
-			"read -t2 -r ans" \
-			'[ "${ans:0:6}" = "HELLO " ]'
-		) || {
-			die 1 "BAD answer during HELLO with '$server'"
-		}
+		echo HI >&${to_server_fd}
 
-		[ "$LOGLEVEL" -lt $INFO ] || err "Got HELLO..."
+		read -t2 server_info ||
+			die 1 "Timeout waiting HI answer with '$server'"
 
-		if [ "$test_HELLO" ]; then
-			print_result "hello" "duration" "seconds" "$(awkcalc '$1/1000' "$t_ms")"
-		fi
+		[ "$LOGLEVEL" -lt $TRACE ] ||
+			err "Server info: '$server_info'"
+
+		for ans in $server_info; do
+			[ "$ans" != "HELLO" ] || break
+			ip_address=${ans%,*}
+			proto=${ans#*,}
+		done
+		[ "${ans}" = "HELLO" ] ||
+			die 1 "BAD answer during HELLO with '$server': ${ans}"
+		[ "$LOGLEVEL" -lt $INFO ] || err "Got HELLO"
 
 		if [ "$test_PING" ]; then
 			rtt_max=0
@@ -362,10 +402,12 @@ test_server() {
 			rtt_sum=0
 			rtt2_sum=0
 			rtt_count=$PING_REPEAT
+			[ "$LOGLEVEL" -lt $INFO ] || err "Sending $PING_REPEAT PING sequences"
 			for i in $(seq $rtt_count); do
 				t_ms=$($time_in_ms \
+					${to_server_fd} \
 					"echo PING $(date +%s)000" \
-					"read -r ans" \
+					"read -t2 -r ans" \
 					'[ "${ans:0:4}" = "PONG" ]'
 				) || die 1 "BAD answer during ping"
 
@@ -397,9 +439,10 @@ test_server() {
 			[ "$blocksize" ] || [ "$LOGLEVEL" -lt $WARN ] || err "DOWNLOAD_SIZE=$DOWNLOAD_SIZE is not a multiple of 512"
 
 			t_ms=$($time_in_ms \
+				${to_server_fd} \
 				"echo DOWNLOAD $DOWNLOAD_SIZE" \
-				"dd ibs=$blocksize iflag=fullblock skip=$((DOWNLOAD_SIZE/blocksize)) count=0" # head -c was too slow
-			&>/dev/null) &>/dev/null || die 1 "BAD answer during download"
+				"dd ibs=$blocksize iflag=fullblock skip=$((DOWNLOAD_SIZE/blocksize)) count=0 of=/dev/null" \
+			) &>/dev/null || die 1 "BAD answer during download"
 
 			print_result "download" "payload" "bytes" "$DOWNLOAD_SIZE"
 			print_result "download" "duration" "seconds" "$(awkcalc '$1/1000' "$t_ms")"
@@ -425,6 +468,7 @@ test_server() {
 			done
 			# FIXME: use random pattern, maybe using dd
 			t_ms=$($time_in_ms \
+				${to_server_fd} \
 				"eval echo $cmd; printf %.*x $printf_args" \
 				"read -r ans" \
 				'[ "${ans:0:'"$((${#cmd}-5))"'}" = "OK $UPLOAD_SIZE " ]'
@@ -437,6 +481,7 @@ test_server() {
 
 		fi
 
+		[ "$LOGLEVEL" -lt $INFO ] || err "Sending QUIT"
 		echo "QUIT" >&${to_server_fd}
 		eval "exec ${to_server_fd}<&-"
 	)
