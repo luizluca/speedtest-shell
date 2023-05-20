@@ -14,7 +14,7 @@ next_free_fd() {
 err(){	printf "%s\n" "$1" >&2; }
 die(){
 	local errcode=$1; shift
-	err "$@"
+	[ $LOGLEVEL -lt $ERR ] || err "$@"
 	exit $errcode
 } 
 
@@ -27,13 +27,14 @@ function time_in_ms_uptime() {
 	local send_cmd="$1"
 	local recv_cmd="$2"
 	local check_cmd="${3:-true}"
+	local errcode
 	local t1 t2 x
 	read t1 x < /proc/uptime ||
-		{ err=$?; echo "Failed on reading tick" >&2; return $err; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on reading tick"; return $errcode; }
 	{ $send_cmd; } >&${to_server_fd} </dev/null ||
-		{ err=$?; echo "Failed on send cmd '$send_cmd'" >&2; return $err; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on send cmd '$send_cmd'"; return $errcode; }
 	{ $recv_cmd; } &>/dev/null ||
-		{ err=$?; echo "Failed on recv cmd '$recv_cmd'" >&2; return $err; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on recv cmd '$recv_cmd'"; return $errcode; }
 	read t2 x < /proc/uptime
 	eval "$check_cmd" || return 1
 	echo "$((${t2//./}-${t1//./}))0"
@@ -43,13 +44,14 @@ function time_in_ms_hrtimer(){
 	local send_cmd="$1"
 	local recv_cmd="$2"
 	local check_cmd="${3:-true}"
+	local errcode
 	local t1 t2 x
 	{ read -r _; read -r _; read -r now at t1 _; } < /proc/timer_list ||
-		{ err=$?; echo "Failed on reading tick" >&2; return $err; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on reading tick" >&2; return $errcode; }
 	{ $send_cmd; } >&${to_server_fd} </dev/null ||
-		{ err=$?; echo "Failed on send cmd '$send_cmd'" >&2; return $err; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on send cmd '$send_cmd'" >&2; return $errcode; }
 	{ $recv_cmd; } &>/dev/null ||
-		{ err=$?; echo "Failed on recv cmd '$recv_cmd'" >&2; return $err; }
+		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on recv cmd '$recv_cmd'" >&2; return $errcode; }
 	{ read -r _; read -r _; read -r now at t2 _ ; } < /proc/timer_list
 	eval "$check_cmd" || return 1
 	echo "$(((${t2//./}-${t1//./})/1000000))"
@@ -70,7 +72,7 @@ function monitor_cpu(){
 			line=${line#* }
 			idle=${line%% *}
 			if [ "$idle" = "$last_idle" ]; then
-				err "CPU is struggling... expect worse measures"
+				[ "$LOGLEVEL" -lt $WARN ] || err "CPU is struggling... expect worse measures"
 				# stop as we have already warned
 				break 2
 			fi
@@ -90,15 +92,16 @@ PRINTF_MAX_REPEAT=$(((1<<31)-1))
 SPEEDTEST_SERVERS=https://www.speedtest.net/speedtest-servers-static.php
 PORT=8080
 SERVER=""
-VERBOSE=false
+LOGLEVEL=2
+NONE=0 ERR=1 WARN=2 INFO=3 TRACE=4
 LIST_ONLY=false
 NETCATS="socat netcat nc"
 BIND=""
 
 help(){
 	cat <<EOF
-Usage ${0##*/} [ -4 | -6 ] [ -c ( nc | netcat | socat ) ] [ -d bytes ] [ -i times ]
-      [-I device] [ -p port ] [ -s server] [ -u bytes ]
+Usage ${0##*/} [-v] [-V] [ -4 | -6 ] [ -c ( nc | netcat | socat ) ] [ -d bytes ]
+      [ -i times ] [-I device] [ -p port ] [ -s server] [ -u bytes ]
 
 Runs a speedtest 
 
@@ -113,7 +116,8 @@ Options:
  -s	Define the server address (name or ip address) with port. IPv6 addresses
 	needs to use braces, like in URL. Default is to look for the fastest server.
  -u	Define the upload payload size in bytes; Default is $UPLOAD_SIZE
- -v	Be verbose
+ -v	More verbose (can be repeated)
+ -V	Less verbose (can be repeated)
 
 If not server was provided, it will look for the best one at:
  $SPEEDTEST_SERVERS
@@ -121,7 +125,7 @@ If not server was provided, it will look for the best one at:
 EOF
 }
 
-while getopts '46c:d:hi:I:ls:u:v' opt; do
+while getopts '46c:d:hi:I:ls:u:vV' opt; do
 	case "$opt" in
 		4) PROTOS=4;;
 		6) PROTOS=6;;
@@ -130,23 +134,26 @@ while getopts '46c:d:hi:I:ls:u:v' opt; do
 		h) help; exit;;
 		i) PING_REPEAT=$OPTARG;;
 		I) BIND=$OPTARG;;
-		l) LIST_ONLY=true; VERBOSE=true;;
+		l) LIST_ONLY=true;;
 		s) SERVER=$OPTARG ;;
 		u) UPLOAD_SIZE=$OPTARG;;
-		v) VERBOSE=true;;
+		v) LOGLEVEL=$((LOGLEVEL+1));;
+		V) LOGLEVEL=$((LOGLEVEL-1));;
 		*) help; exit 1;;
 	esac
 done
 
 for cmd in $NETCATS; do
 	command -v $cmd &>/dev/null || continue
+	[ "$LOGLEVEL" -lt $INFO ] || err Using "$cmd" as client
 	case $cmd in
 		socat)
 			nc_socat(){
+				[ "$LOGLEVEL" -lt $TRACE ] || socat_verbose='-v' || socat_verbose=''
 				if [[ "$1" = *:* ]]; then
-					socat - "tcp6-connect:[$1]:$2${BIND:+,so-bindtodevice=$BIND}"
+					socat $socat_verbose - "tcp6-connect:[$1]:$2${BIND:+,so-bindtodevice=$BIND}"
 				else
-					socat - "tcp-connect:$1:$2${BIND:+,so-bindtodevice=$BIND}"
+					socat $socat_verbose - "tcp-connect:$1:$2${BIND:+,so-bindtodevice=$BIND}"
 				fi
 			}
 			NETCAT=nc_socat
@@ -159,7 +166,7 @@ for cmd in $NETCATS; do
 done
 
 if ! command -v getent &>/dev/null; then
-	! "$VERBOSE" || err "getent not found. Using ping instead."
+	[ "$LOGLEVEL" -lt $WARN ] || err "getent not found. Using ping instead."
 	getent() {
 		local protos="-4 -6"
 		case "$1" in
@@ -167,10 +174,10 @@ if ! command -v getent &>/dev/null; then
 			ahostsv6) protos=-6;;
 			ahosts)   ;;
 			hosts)    protos="-c1";;
-			"")     err "fake-getent: wrong number of arguments"
+			"")     [ "$LOGLEVEL" -lt $ERR ] || err "fake-getent: wrong number of arguments"
 				return 1;;
 			*)
-				err "fake-getent only supports ( ahosts[v4|v6] | host )"
+				[ "$LOGLEVEL" -lt $ERR ] || err "fake-getent only supports ( ahosts[v4|v6] | host )"
 				return 1;;
 		esac
 		shift
@@ -179,7 +186,7 @@ if ! command -v getent &>/dev/null; then
 			local proto
 			for proto in $protos; do
 				local out ipaddr
-				out=$(ping -n -W0 -w0 -q -c1 $proto $host 2>&1) ||
+				out=$(ping -n -W1 -w1 -q -c1 $proto $host 2>&1) ||
 					continue
 				ipaddr=$(echo "$out" | sed -r 's/^[^\(]* \(([^)]+)\).*/\1/;q')
 				if [ "$proto" = -c1 ]; then
@@ -310,21 +317,21 @@ test_server() {
 	(
 		# Detect server proto:
 		for proto in $PROTOS; do
+			[ "$LOGLEVEL" -lt $INFO ] || err "Trying $server:$port (IPv$proto)..."
 			if ip -$proto route get "$server" &>/dev/null; then
 				# $server is an IP address
 				ip_address=$server
 				break
 			else
 				[ $proto -eq 6 ] && query=AAAA || query=A
-
+				[ "$LOGLEVEL" -lt $INFO ] || err "Resolving $server (IPv$proto)..."
 				ip_address=$(getent "ahostsv$proto" "$server" | awk '$2=="STREAM" { print $1}')
 				[ "$ip_address" ] || continue
+				[ "$LOGLEVEL" -lt $INFO ] || err "Resolved $server (IPv$proto) to $ip_address"
 			fi
 
-			! "$VERBOSE" || err "Connecting to $server($ip_address)..."
-			if $NETCAT "$ip_address" "$port" <${to_server}; then
-			       exit
-			fi
+			[ "$LOGLEVEL" -lt $INFO ] || err "Connecting to $server:$port($ip_address)..."
+			$NETCAT "$ip_address" "$port" <${to_server} && exit
 		done
 		exit
 		die 1 "$server could not be resolved or it is not reachable"
@@ -334,11 +341,16 @@ test_server() {
 		next_free_fd to_server_fd
 		eval "exec ${to_server_fd}<>""'$to_server'"
 
+		[ "$LOGLEVEL" -lt $INFO ] || err "Sending HI..."
 		t_ms=$($time_in_ms \
 			"echo HI" \
-			"read -r ans" \
+			"read -t2 -r ans" \
 			'[ "${ans:0:6}" = "HELLO " ]'
-		) || die 1 "BAD answer during HELLO"
+		) || {
+			die 1 "BAD answer during HELLO with '$server'"
+		}
+
+		[ "$LOGLEVEL" -lt $INFO ] || err "Got HELLO..."
 
 		if [ "$test_HELLO" ]; then
 			print_result "hello" "duration" "seconds" "$(awkcalc '$1/1000' "$t_ms")"
@@ -373,16 +385,16 @@ test_server() {
 		fi
 
 		if [ "$test_DOWNLOAD" ]; then
-			! "$VERBOSE" || err "Askig for $DOWNLOAD_SIZE bytes"
+			[ "$LOGLEVEL" -lt $INFO ] || err "Askig for $DOWNLOAD_SIZE bytes"
 			for blocksize in 4096 2048 1024 512; do
 				if [ $((DOWNLOAD_SIZE % blocksize)) -gt 0 ]; then
-					! "$VERBOSE" || err "DOWNLOAD_SIZE=$DOWNLOAD_SIZE is not a multiple of blocksize=$blocksize"
+					[ "$LOGLEVEL" -lt $WARN ] || err "DOWNLOAD_SIZE=$DOWNLOAD_SIZE is not a multiple of blocksize=$blocksize"
 					blocksize=""
 				else
 					break
 				fi
 			done
-			[ "$blocksize" ] || err "DOWNLOAD_SIZE=$DOWNLOAD_SIZE is not a multiple of 512"
+			[ "$blocksize" ] || [ "$LOGLEVEL" -lt $WARN ] || err "DOWNLOAD_SIZE=$DOWNLOAD_SIZE is not a multiple of 512"
 
 			t_ms=$($time_in_ms \
 				"echo DOWNLOAD $DOWNLOAD_SIZE" \
@@ -396,7 +408,7 @@ test_server() {
 		fi
 		if [ "$test_UPLOAD" ]; then
 
-			! "$VERBOSE" || err "Ofering $UPLOAD_SIZE bytes"
+			[ "$LOGLEVEL" -lt $INFO ] || err "Ofering $UPLOAD_SIZE bytes"
 
 			cmd="UPLOAD $UPLOAD_SIZE 0"
 			remaining_payload=$((UPLOAD_SIZE - (${#cmd}+1)))
@@ -440,7 +452,7 @@ trap "exit" INT TERM
 trap "kill $monitor_cpu_pid 2>/dev/null; rm -rf '$tempdir'" EXIT
 
 if [ -z "$SERVER" ]; then
-	! "$VERBOSE" || err "No server defined. Looking for the best server"
+	[ "$LOGLEVEL" -lt $INFO ] || err "No server defined. Looking for the best server"
 
 	servers=$(
 	if command -v wget &>/dev/null; then
@@ -471,19 +483,21 @@ if [ -z "$SERVER" ]; then
 		latency=$(FORMAT=plain PING_REPEAT=2 test_server "$_server" PING | grep -E '^rtt_min'$'\t' | cut -f2)
 		[ "$latency" ] || continue
 		latency_ms=$(awkcalc 'int($1 * 1000)' $latency)
-		! "$VERBOSE" || err "$_server: $latency_ms ms"
+		[ "$LOGLEVEL" -lt $INFO ] || err "$_server: $latency_ms ms"
 		if [ "$latency_ms" -lt "$best_latency_ms" ]; then
 			best_latency_ms=$latency_ms
 			server=$_server
 		fi
 	done
 	[ "$server" ] || die 1 "No server reachable!"
-	! "$VERBOSE" || err "Best Server: $(echo "$servers" | grep "^$server" | tr '\t' ' ') at $best_latency_ms ms"
+	[ "$LOGLEVEL" -lt $INFO ] || err "Best Server: $(echo "$servers" | grep "^$server" | tr '\t' ' ') at $best_latency_ms ms"
 else
-	! "$VERBOSE" || err "Server defined as '$SERVER'"
+	[ "$LOGLEVEL" -lt $INFO ] || err "Server defined as '$SERVER'"
 	server=$SERVER
 fi
 
-if ! "$LIST_ONLY"; then
+if "$LIST_ONLY"; then
+	echo "$server"
+else
 	test_server "$server" PING DOWNLOAD UPLOAD
 fi
