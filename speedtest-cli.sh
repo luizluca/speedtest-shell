@@ -139,7 +139,7 @@ DOWNLOAD_SIZE=$((50 * 1024 * 1024))
 UPLOAD_SIZE=$((20 * 1024 * 1024))
 PING_REPEAT=10
 PRINTF_MAX_REPEAT=$(((1<<31)-1))
-SPEEDTEST_SERVERS=https://www.speedtest.net/speedtest-servers-static.php
+SPEEDTEST_SERVERS=https://www.speedtest.net/api/js/servers?limit=10
 PORT=8080
 SERVER=""
 LOGLEVEL=2
@@ -533,20 +533,12 @@ if [ -z "$SERVER" ]; then
 		wget -O - -q "$SPEEDTEST_SERVERS"
 	elif command -v curl &>/dev/null; then
 		curl -sS "$SPEEDTEST_SERVERS"
-	fi | sed -r 's/></>\n</g' | 
-		awk '
-			BEGIN { pregex="^[[:blank:]]*([a-zA-Z0-9]+)=\"([^\"]*)\"" }
-			/^<\?/ {next}
-			{ delete attr }
-			{ tag=gensub(/>$/,"",1,gensub(/^</,"","1",$1)); $1="" }
-			{ while (1) {
-				key=gensub(pregex ".*","\\1","1",$0)
-				if (key==$0) break
-				value=gensub(pregex ".*","\\2","1",$0)
-				$0=gensub(pregex,"","1",$0)
-				attr[key]=value
-			}}
-			tag=="server" { printf "%s\t%s (%s/%s)\n", attr["host"], attr["sponsor"], attr["name"], attr["cc"]  }'
+	fi | sed -e 's/,/\n/g' | sed -e 's/:/\t/;s/[]["{]//g;s/}/\n/' | awk '
+		{ attr[$1]=$2 }
+		/^$/ && attr["url"] {
+			printf "%s\t%s (%s/%s)\n", attr["host"], attr["sponsor"], attr["name"], attr["cc"]
+			delete attr
+		}'
 	)
 
 	[ "$servers" ] ||
