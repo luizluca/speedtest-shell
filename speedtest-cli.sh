@@ -19,6 +19,46 @@ die(){
 	exit $errcode
 } 
 
+if ! ( echo "" | read -t 0 2>/dev/null ); then
+# DASH does not implement read -t
+read() {
+	OPTIND=1
+	local t_opt t_arg r_opt p_opt p_arg
+	while getopts "t:rp:" opt; do
+		case "$opt" in
+			t) t_opt="-t" t_arg="$OPTARG";;
+			r) r_opt="-r";;
+			p) p_opt="-p" p_arg="$OPTARG";;
+			*) ;;
+		esac
+	done
+	shift $((OPTIND - 1))
+	[ "$#" -eq 0 ] && set -- "REPLY"
+	[ "$r_opt" ] && set -- "$r_opt" "$@"
+	[ "$p_opt" ] && set -- "$p_opt" "$p_arg" "$@"
+
+
+	if [ "$t_opt" ]; then
+		read_timeout=
+		local subshell_pid=$(sh -c 'echo $PPID')
+		trap 'read_timeout=1' ALRM
+		( sleep "$t_arg" && kill -ALRM $subshell_pid 2>/dev/null ) &
+		local timeout_pid=$!
+		command read "${@}"
+		local err=$?
+		if [ "$read_timeout" ]; then
+			echo "" >&2
+			err=128
+		else
+			kill $timeout_pid >&2
+		fi
+		trap - ALRM
+		return $err
+	else
+		command read "${@}"
+	fi
+}
+fi
 
 if awk 'BEGIN sqrt(1)' >/dev/null 2>&1; then
 	awkcalc() {
@@ -61,7 +101,7 @@ time_in_ms_uptime() {
 		{ errcode=$?; [ "$LOGLEVEL" -lt "$WARN" ] || err "Failed on reading tick"; return $errcode; }
 	{ $send_cmd; } >&${cmd_fd} </dev/null ||
 		{ errcode=$?; [ "$LOGLEVEL" -lt "$WARN" ] || err "Failed on send cmd '$send_cmd'"; return $errcode; }
-	{ $recv_cmd; } &>/dev/null ||
+	{ $recv_cmd; } >/dev/null 2>&1 ||
 		{ errcode=$?; [ "$LOGLEVEL" -lt "$WARN" ] || err "Failed on recv cmd '$recv_cmd'"; return $errcode; }
 	read t2 x < /proc/uptime
 	eval "$check_cmd" || return 1
@@ -81,7 +121,7 @@ time_in_ms_hrtimer(){
 		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on reading tick"; return $errcode; }
 	{ $send_cmd; } >&${cmd_fd} </dev/null ||
 		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on send cmd '$send_cmd'"; return $errcode; }
-	{ $recv_cmd; } &>/dev/null ||
+	{ $recv_cmd; } >/dev/null 2>&1 ||
 		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on recv cmd '$recv_cmd'"; return $errcode; }
 	{ read -r _; read -r _; read -r now at t2 _ ; } < /proc/timer_list
 	eval "$check_cmd" || return 1
@@ -99,7 +139,7 @@ time_in_ms_epochtime() {
 	t1=${EPOCHREALTIME}
 	{ $send_cmd; } >&${cmd_fd} </dev/null ||
 		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on send cmd '$send_cmd'"; return $errcode; }
-	{ $recv_cmd; } &>/dev/null ||
+	{ $recv_cmd; } >/dev/null 2>&1 ||
 		{ errcode=$?; [ "$LOGLEVEL" -lt $WARN ] || err "Failed on recv cmd '$recv_cmd'"; return $errcode; }
 	t2=${EPOCHREALTIME}
 	t1=$(echo "$t1" | tr -d '.,')
@@ -205,7 +245,7 @@ for cmd in $NETCATS; do
 				socat_args=''
 				[ "$LOGLEVEL" -ge $INFO ] || socat_verbose="$socat_args -lf /dev/null"
 				[ "$LOGLEVEL" -lt $TRACE ] || socat_verbose="$socat_args -v"
-				if [[ "$1" = *:* ]]; then
+				if echo "$1" | grep -q :; then
 					socat $socat_verbose - "tcp6-connect:[$1]:$2${BIND:+,so-bindtodevice=$BIND}"
 				else
 					socat $socat_verbose - "tcp-connect:$1:$2${BIND:+,so-bindtodevice=$BIND}"
@@ -388,7 +428,7 @@ test_server() {
 		# Detect server proto:
 		for proto in $PROTOS; do
 			[ "$LOGLEVEL" -lt $INFO ] || err "Trying $server:$port (IPv$proto)..."
-			if ip -$proto route get "$server" &>/dev/null; then
+			if ip -$proto route get "$server" >/dev/null 2>&1; then
 				# $server is an IP address
 				ip_address=$server
 				break
@@ -442,7 +482,7 @@ test_server() {
 					${to_server_fd} \
 					"echo PING $(date +%s)000" \
 					"read -t2 -r ans" \
-					'[ "${ans:0:4}" = "PONG" ]'
+					'[ "${ans#PONG}" != "$ans" ]'
 				) || die 1 "BAD answer during ping"
 
 				rtt_sum=$((rtt_sum + t_ms))
@@ -476,7 +516,7 @@ test_server() {
 				${to_server_fd} \
 				"echo DOWNLOAD $DOWNLOAD_SIZE" \
 				"dd ibs=$blocksize iflag=fullblock skip=$((DOWNLOAD_SIZE/blocksize)) count=0 of=/dev/null" \
-			) &>/dev/null || die 1 "BAD answer during download"
+			) >/dev/null 2>&1 || die 1 "BAD answer during download"
 
 			print_result "download" "payload" "bytes" "$DOWNLOAD_SIZE"
 			print_result "download" "duration" "seconds" "$(awkcalc '$1/1000' "$t_ms")"
@@ -505,7 +545,7 @@ test_server() {
 				${to_server_fd} \
 				"eval echo $cmd; printf %.*x $printf_args" \
 				"read -r ans" \
-				'[ "${ans:0:'"$((${#cmd}-5))"'}" = "OK $UPLOAD_SIZE " ]'
+				'[ "${ans#OK $UPLOAD_SIZE }" != "$ans" ]'
 			) || die 1 "BAD answer during upload"
 
 			print_result "upload" "payload" "bytes" "$UPLOAD_SIZE"
@@ -534,9 +574,9 @@ if [ -z "$SERVER" ]; then
 	[ "$LOGLEVEL" -lt $INFO ] || err "No server defined. Looking for the best server"
 
 	servers=$(
-	if command -v wget &>/dev/null; then
+	if command -v wget >/dev/null 2>&1; then
 		wget -O - -q "$SPEEDTEST_SERVERS"
-	elif command -v curl &>/dev/null; then
+	elif command -v curl >/dev/null 2>&1; then
 		curl -sS "$SPEEDTEST_SERVERS"
 	fi | sed -e 's/,/\n/g' | sed -e 's/:/\t/;s/[]["{]//g;s/}/\n/' | awk '
 		{ attr[$1]=$2 }
