@@ -371,6 +371,11 @@ test_server() {
 
 	port=${server##*:}
 	server=${server%:*}
+	if [ "$port" = "$server" ]; then
+		echo "There is no port for $server" >&2
+		exit 1
+	fi
+
 	if [ "${server#[}" != "${server}" ]; then
 		server=${server#[}
 		server=${server%]}
