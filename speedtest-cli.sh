@@ -395,7 +395,7 @@ test_server() {
 			else
 				[ $proto -eq 6 ] && query=AAAA || query=A
 				[ "$LOGLEVEL" -lt $INFO ] || err "Resolving $server (IPv$proto)..."
-				ip_address=$(getent "ahostsv$proto" "$server" | awk '$2=="STREAM" { print $1}')
+				ip_address=$(getent "ahostsv$proto" "$server" | grep -v '^::ffff:' | awk '$2=="STREAM" { print $1; exit(0); }')
 				[ "$ip_address" ] || continue
 				[ "$LOGLEVEL" -lt $INFO ] || err "Resolved $server (IPv$proto) to $ip_address"
 			fi
