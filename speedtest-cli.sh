@@ -19,10 +19,36 @@ die(){
 	exit $errcode
 } 
 
-awkcalc() {
-	local exp="$1"; shift
-	echo "$@" | LC_NUMERIC=C awk '{ print '"$exp"' }'
-}
+
+if awk 'BEGIN sqrt(1)' >/dev/null 2>&1; then
+	awkcalc() {
+		local exp="$1"; shift
+		echo "$@" | LC_NUMERIC=C awk '{ print '"$exp"' }'
+	}
+else
+	awkcalc() {
+		local exp="$1"; shift
+		exp=$(printf "%s" "$exp" | sed -e 's/sqrt(/_sqrt(/')
+		echo "$@" | LC_NUMERIC=C awk '
+			function _sqrt(value) {
+			    if (value < 0) {
+				return "-nan"
+			    }
+			    if (value == 0) {
+				return 0
+			    }
+			    # Initial guess
+			    root = 1.0
+			    # 10 iterations are usually enough for standard floating-point precision
+			    for (i = 0; i < 10; i++) {
+				root = 0.5 * (root + (value / root))
+			    }
+			    return root
+			}
+			{ print '"${exp}"' }
+		'
+	}
+fi
 
 time_in_ms_uptime() {
 	local cmd_fd="${1:?Send channel FD is missing}"
