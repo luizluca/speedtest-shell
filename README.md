@@ -18,18 +18,21 @@ Options:
  -i     Define number of times a PING command is issued. Default is 10
  -I     Bind to interface (only works with socat)
  -l     List close servers
+ -L     List all servers 
  -s     Define the server address (name or ip address) with port. IPv6 addresses
         needs to use braces, like in URL. Default is to look for the fastest server.
  -u     Define the upload payload size in bytes; Default is 20971520
  -v     Be verbose
 
 If not server was provided, it will look for the best one at:
- https://www.speedtest.net/speedtest-servers-static.php
+ https://www.speedtest.net/api/js/servers?limit=10
 ```
 
-It requires a web client (curl or wget), a tcp client (socat, netcat or nc) and a POSIX shell (tested with ash and bash). It also requires some basic unix tools like sed, awk, dd, tr, grep, cut, nslookup, ip
+It requires a web client (curl or wget), a tcp client (socat, netcat or nc) and a POSIX shell (tested with ash, dash and bash). It also requires some basic unix tools like sed, awk, dd, tr, grep, cut, nslookup, ip
 
-If no server is specified, it gets a list of servers from https://www.speedtest.net/speedtest-servers-static.php, choose the closest one (based on the server answers) and run a test. The standard est is executed through a TCP connection. First, it pings the server (through the TCP connection) and then download 50M and upload 20M.
+Sometimes, when running with Bash, the upload process might hang for some seconds, significantly lowering the reported upload speed.
+
+If no server is specified, it gets a list of servers from https://www.speedtest.net/api/js/servers?limit=10, choose the closest one (based on the server answers) and run a test. The standard est is executed through a TCP connection. First, it pings the server (through the TCP connection) and then download 50M and upload 20M.
 
 As a shell script, this client has its limitations. I could not test anything over 170 Mbps but I cannot garantee this is the connection, target server or script limit. For slow CPU devices, like many OpenWrt routers, that limit would be even lower. If the script detects the CPU is at 100%, it will 
 give you a warning ("CPU is struggling... expect worse measures"). With slow CPUs, the socat seems to be the best option.
