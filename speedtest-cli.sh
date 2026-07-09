@@ -145,6 +145,7 @@ SERVER=""
 LOGLEVEL=2
 NONE=0 ERR=1 WARN=2 INFO=3 TRACE=4
 LIST_ONLY=false
+LIST_SERVERS=false
 NETCATS="socat netcat nc"
 BIND=""
 
@@ -163,6 +164,7 @@ Options:
  -i	Define number of times a PING command is issued. Default is $PING_REPEAT
  -I     Bind to interface (only works with socat)
  -l     List close servers
+ -L	List all servers
  -s	Define the server address (name or ip address) with port. IPv6 addresses
 	needs to use braces, like in URL. Default is to look for the fastest server.
  -u	Define the upload payload size in bytes; Default is $UPLOAD_SIZE
@@ -175,7 +177,7 @@ If not server was provided, it will look for the best one at:
 EOF
 }
 
-while getopts '46c:d:hi:I:ls:u:vV' opt; do
+while getopts '46c:d:hi:I:lLs:u:vV' opt; do
 	case "$opt" in
 		4) PROTOS=4;;
 		6) PROTOS=6;;
@@ -185,6 +187,7 @@ while getopts '46c:d:hi:I:ls:u:vV' opt; do
 		i) PING_REPEAT=$OPTARG;;
 		I) BIND=$OPTARG;;
 		l) LIST_ONLY=true;;
+		L) LIST_SERVERS=true;;
 		s) SERVER=$OPTARG ;;
 		u) UPLOAD_SIZE=$OPTARG;;
 		v) LOGLEVEL=$((LOGLEVEL+1));;
@@ -548,6 +551,13 @@ if [ -z "$SERVER" ]; then
 
 	[ "$servers" ] ||
 		die 1 "No servers found at '$SPEEDTEST_SERVERS'"
+
+	if $LIST_SERVERS; then
+		for _server in $(echo "$servers" | cut -f1); do
+			echo "$_server"
+		done
+		exit
+	fi
 
 	best_latency_ms=9999999
 	for _server in $(echo "$servers" | cut -f1); do
